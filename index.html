@@ -63,6 +63,7 @@
     </div>
     <div class="topbar-right">
       <span class="top-stats" id="topStats"></span>
+      <button class="btn-outline" style="padding:0 10px;height:32px;font-size:12px;" onclick="openApiKeyModal()" title="Configurar clave API">⚙️ API</button>
       <button class="user-pill" id="userPill">
         <div class="user-avatar" id="topAvatar"></div>
         <span id="topUserName"></span>
@@ -247,6 +248,29 @@
     <div class="modal-actions">
       <button class="btn-outline" data-close="userMenu">Cancelar</button>
       <button class="btn-danger" id="logoutBtn">Cerrar sesión</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════
+     MODAL: CLAVE API
+════════════════════════════════════════════ -->
+<div class="overlay hidden" id="apiKeyModal">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <h2 class="modal-title">Clave API de Anthropic</h2>
+      <button class="modal-close" data-close="apiKeyModal">✕</button>
+    </div>
+    <div class="form-group">
+      <label class="form-label">API Key</label>
+      <input class="form-input" id="apiKeyInput" type="password" placeholder="sk-ant-api03-..." autocomplete="off">
+      <p style="font-size:11px;color:var(--text-tertiary);margin-top:6px">
+        Obtené tu clave en <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--green)">console.anthropic.com</a>. Se guarda solo en este dispositivo.
+      </p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-outline" data-close="apiKeyModal">Cancelar</button>
+      <button class="btn-primary" onclick="saveApiKey()">Guardar</button>
     </div>
   </div>
 </div>
