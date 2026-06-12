@@ -11,8 +11,8 @@ import {
 // ESTADO GLOBAL
 // ═══════════════════════════════════════════
 const S = {
-  currentUser : null,   // nombre elegido (string)
-  authUid     : null,   // uid anónimo de Firebase Auth
+  currentUser : null,
+  authUid     : null,
   categories  : [],
   links       : [],
   users       : [],
@@ -23,6 +23,8 @@ const S = {
   searchQ     : "",
   editingId   : null,
   currentTags : [],
+  _pendingOgImage : null,
+  _pendingUserImage: null,  // base64 image uploaded by user
 };
 
 // ═══════════════════════════════════════════
@@ -334,8 +336,10 @@ function cardHTML(l) {
   const dateStr = l.createdAt?.toDate
     ? l.createdAt.toDate().toLocaleDateString("es-AR",{day:"numeric",month:"short"})
     : "";
-  const thumb = l.ogImage
-    ? `<div class="card-thumb"><img src="${escAttr(l.ogImage)}" alt="" loading="lazy" onerror="this.parentElement.remove()"></div>`
+  // User-uploaded image takes priority over OG image
+  const imgSrc = l.userImage || l.ogImage || null;
+  const thumb = imgSrc
+    ? `<div class="card-thumb"><img src="${escAttr(imgSrc)}" alt="" loading="lazy" onerror="this.parentElement.remove()"></div>`
     : "";
   return `<div class="card" onclick="openDetail('${l.id}')">
     ${thumb}
@@ -383,9 +387,10 @@ window.openDetail = id => {
   const dateStr = l.createdAt?.toDate
     ? l.createdAt.toDate().toLocaleDateString("es-AR",{day:"numeric",month:"long",year:"numeric"})
     : "";
+  const imgSrc = l.userImage || l.ogImage || null;
   document.getElementById("detailTitle").textContent = l.title || "Sin título";
   document.getElementById("detailBody").innerHTML = `
-    ${l.ogImage ? `<img class="detail-thumb" src="${escAttr(l.ogImage)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+    ${imgSrc ? `<img class="detail-thumb" src="${escAttr(imgSrc)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
     <a class="detail-url" href="${escAttr(l.url)}" target="_blank" rel="noopener">${escHtml(l.url)}</a>
     ${l.desc ? `<p class="detail-desc">${escHtml(l.desc)}</p>` : ""}
     <div class="detail-badges">
@@ -417,11 +422,15 @@ window.editLink = id => {
   S.editingId = id;
   S.currentTags = [...(l.tags||[])];
   S._pendingOgImage = null;
+  S._pendingUserImage = null;
   document.getElementById("urlInput").value = l.url || "";
   document.getElementById("titleInput").value = l.title || "";
   document.getElementById("descInput").value = l.desc || "";
   document.getElementById("catSelect").value = l.catId || "";
   document.getElementById("platformSelect").value = l.platform || "web";
+  // Show existing image preview if any
+  const existing = l.userImage || l.ogImage || null;
+  renderImagePreview(existing, !!l.userImage);
   renderTagsInModal();
   document.getElementById("linkModalTitle").textContent = "Editar link";
   document.getElementById("aiStrip").classList.add("hidden");
@@ -435,11 +444,13 @@ document.getElementById("addLinkBtn").addEventListener("click", () => {
   S.editingId = null;
   S.currentTags = [];
   S._pendingOgImage = null;
+  S._pendingUserImage = null;
   document.getElementById("urlInput").value = "";
   document.getElementById("titleInput").value = "";
   document.getElementById("descInput").value = "";
   document.getElementById("platformSelect").value = "web";
   document.getElementById("aiStrip").classList.add("hidden");
+  renderImagePreview(null, false);
   renderTagsInModal();
   document.getElementById("linkModalTitle").textContent = "Agregar link";
   if (S.activeCat !== "all") document.getElementById("catSelect").value = S.activeCat;
@@ -598,6 +609,7 @@ Respondé SOLO el JSON, sin texto adicional.`;
     // Store OG image if found
     if (ogData.image) {
       S._pendingOgImage = ogData.image;
+      renderImagePreview(ogData.image, false);
       stripText.innerHTML = "✓ IA completó los datos · imagen de vista previa detectada. Revisá y guardá.";
     } else {
       S._pendingOgImage = null;
@@ -610,7 +622,10 @@ Respondé SOLO el JSON, sin texto adicional.`;
     if (ogData.title) {
       document.getElementById("titleInput").value = ogData.title;
       if (ogData.desc) document.getElementById("descInput").value = ogData.desc;
-      if (ogData.image) S._pendingOgImage = ogData.image;
+      if (ogData.image) {
+        S._pendingOgImage = ogData.image;
+        renderImagePreview(ogData.image, false);
+      }
       stripText.textContent = "IA no disponible, se usaron los datos del link. Revisá y guardá.";
     } else {
       stripText.textContent = "No se pudo analizar. Completá los datos manualmente.";
@@ -640,9 +655,17 @@ document.getElementById("saveLinkBtn").addEventListener("click", async () => {
   };
 
   // Attach OG image if fetched during AI analysis
-  if (S._pendingOgImage) {
+  if (S._pendingUserImage) {
+    data.userImage = S._pendingUserImage;
+    data.ogImage = null;  // user image takes over
+    S._pendingUserImage = null;
+  } else if (S._pendingOgImage) {
     data.ogImage = S._pendingOgImage;
     S._pendingOgImage = null;
+  } else if (S._clearImages) {
+    data.userImage = null;
+    data.ogImage = null;
+    S._clearImages = false;
   }
 
   try {
@@ -660,6 +683,68 @@ document.getElementById("saveLinkBtn").addEventListener("click", async () => {
   }
   btn.disabled = false;
   btn.textContent = "Guardar link";
+});
+
+// ═══════════════════════════════════════════
+// IMAGEN MANUAL (upload desde dispositivo)
+// ═══════════════════════════════════════════
+function renderImagePreview(src, isUserImage) {
+  const wrap = document.getElementById("imagePreviewWrap");
+  if (!src) {
+    wrap.innerHTML = "";
+    wrap.classList.add("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  wrap.innerHTML = `
+    <div class="img-preview-inner">
+      <img src="${escAttr(src)}" alt="Vista previa">
+      <button type="button" class="img-preview-remove" onclick="removeUserImage()" title="Quitar imagen">✕</button>
+      ${!isUserImage ? `<span class="img-preview-badge">imagen automática</span>` : ""}
+    </div>`;
+}
+
+window.removeUserImage = () => {
+  S._pendingUserImage = null;
+  // If editing, also clear the stored image flag
+  if (S.editingId) {
+    const l = S.links.find(x => x.id === S.editingId);
+    if (l) {
+      // Mark for deletion on save
+      S._clearImages = true;
+    }
+  }
+  renderImagePreview(null, false);
+};
+
+document.getElementById("imageUploadInput").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (file.size > 600 * 1024) {
+    toast("La imagen debe pesar menos de 600KB. Probá con una captura de pantalla.", "error");
+    e.target.value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = ev => {
+    // Resize/compress to keep Firestore happy (target ~400px wide)
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const MAX = 600;
+      let w = img.width, h = img.height;
+      if (w > MAX) { h = Math.round(h * MAX / w); w = MAX; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      const base64 = canvas.toDataURL("image/jpeg", 0.82);
+      S._pendingUserImage = base64;
+      S._clearImages = false;
+      renderImagePreview(base64, true);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = ""; // reset so same file can be re-selected
 });
 
 // Tags input
