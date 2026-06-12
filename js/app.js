@@ -334,7 +334,11 @@ function cardHTML(l) {
   const dateStr = l.createdAt?.toDate
     ? l.createdAt.toDate().toLocaleDateString("es-AR",{day:"numeric",month:"short"})
     : "";
+  const thumb = l.ogImage
+    ? `<div class="card-thumb"><img src="${escAttr(l.ogImage)}" alt="" loading="lazy" onerror="this.parentElement.remove()"></div>`
+    : "";
   return `<div class="card" onclick="openDetail('${l.id}')">
+    ${thumb}
     <div class="card-header">
       <div class="card-plat-icon" style="background:${plat.bg};color:${plat.color}">${plat.abbr}</div>
       <div class="card-title-wrap">
@@ -381,6 +385,7 @@ window.openDetail = id => {
     : "";
   document.getElementById("detailTitle").textContent = l.title || "Sin título";
   document.getElementById("detailBody").innerHTML = `
+    ${l.ogImage ? `<img class="detail-thumb" src="${escAttr(l.ogImage)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
     <a class="detail-url" href="${escAttr(l.url)}" target="_blank" rel="noopener">${escHtml(l.url)}</a>
     ${l.desc ? `<p class="detail-desc">${escHtml(l.desc)}</p>` : ""}
     <div class="detail-badges">
@@ -411,6 +416,7 @@ window.editLink = id => {
   if (!l) return;
   S.editingId = id;
   S.currentTags = [...(l.tags||[])];
+  S._pendingOgImage = null;
   document.getElementById("urlInput").value = l.url || "";
   document.getElementById("titleInput").value = l.title || "";
   document.getElementById("descInput").value = l.desc || "";
@@ -428,6 +434,7 @@ window.editLink = id => {
 document.getElementById("addLinkBtn").addEventListener("click", () => {
   S.editingId = null;
   S.currentTags = [];
+  S._pendingOgImage = null;
   document.getElementById("urlInput").value = "";
   document.getElementById("titleInput").value = "";
   document.getElementById("descInput").value = "";
@@ -457,36 +464,126 @@ document.getElementById("analyzeBtn").addEventListener("click", analyzeWithAI);
 async function analyzeWithAI() {
   const url = document.getElementById("urlInput").value.trim();
   if (!url) { toast("Ingresá una URL primero", "error"); return; }
+
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    openApiKeyModal();
+    toast("Primero configurá tu clave API de Anthropic", "error");
+    return;
+  }
+
   const strip = document.getElementById("aiStrip");
   const stripText = document.getElementById("aiStripText");
   const btn = document.getElementById("analyzeBtn");
   strip.classList.remove("hidden");
-  stripText.innerHTML = "Analizando con IA <span style='opacity:.6'>...</span>";
+  stripText.innerHTML = "Obteniendo info del link <span style='opacity:.6'>...</span>";
   btn.disabled = true;
 
+  // Fetch OG data and AI in parallel
   const catNames = S.categories.map(c => c.name).join(", ");
+
+  // First try to get OG metadata via proxy
+  let ogData = { title: "", desc: "", image: null };
+  try {
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const ogRes = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+    if (ogRes.ok) {
+      const ogJson = await ogRes.json();
+      const html = ogJson.contents || "";
+      const getMetaContent = (patterns) => {
+        for (const p of patterns) {
+          const m = html.match(p);
+          if (m && m[1]) return m[1].trim();
+        }
+        return "";
+      };
+      ogData.title = getMetaContent([
+        /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i,
+        /<title[^>]*>([^<]+)<\/title>/i,
+      ]);
+      ogData.desc = getMetaContent([
+        /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i,
+        /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']description["']/i,
+      ]);
+      let imgUrl = getMetaContent([
+        /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+        /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+      ]);
+      if (imgUrl) {
+        if (imgUrl.startsWith("/")) {
+          const base = new URL(url);
+          imgUrl = base.origin + imgUrl;
+        }
+        ogData.image = imgUrl;
+      }
+    }
+  } catch(e) { /* continue without OG data */ }
+
+  // Now call Claude API via allorigins proxy (to bypass CORS)
+  stripText.innerHTML = "Analizando con IA <span style='opacity:.6'>...</span>";
+
+  const contextInfo = ogData.title ? `\nTítulo de la página: ${ogData.title}\nDescripción de la página: ${ogData.desc}` : "";
   const prompt = `Analizá este link y respondé SOLO con JSON válido, sin backticks ni texto extra:
-URL: ${url}
+URL: ${url}${contextInfo}
 Categorías disponibles: ${catNames}
 
-Devolvé exactamente: {"title":"título descriptivo en español","desc":"1-2 oraciones en español explicando de qué trata","category":"nombre exacto de la categoría más apropiada o cadena vacía si ninguna aplica","tags":["tag1","tag2","tag3"]}
+Devolvé exactamente: {"title":"título descriptivo en español (máx 80 chars)","desc":"1-2 oraciones en español explicando de qué trata","category":"nombre exacto de la categoría más apropiada o cadena vacía si ninguna aplica","tags":["tag1","tag2","tag3"]}
 
-Si no podés acceder al contenido, inferí por la URL. Respondé SOLO el JSON.`;
+Respondé SOLO el JSON, sin texto adicional.`;
 
   try {
+    // Use allorigins as a CORS proxy to reach Anthropic API
+    const anthropicPayload = JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }]
+    });
+
+    const proxyPayload = {
+      url: "https://api.anthropic.com/v1/messages",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: anthropicPayload
+    };
+
+    // Direct fetch with the correct headers (requires anthropic-dangerous-direct-browser-access)
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        messages: [{ role: "user", content: prompt }]
-      })
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true"
+      },
+      body: anthropicPayload
     });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        toast("Clave API incorrecta. Revisala en Configuración.", "error");
+        stripText.textContent = "Clave API incorrecta. Hacé clic en ⚙️ para actualizarla.";
+        btn.disabled = false;
+        return;
+      }
+      throw new Error(errData.error?.message || `HTTP ${res.status}`);
+    }
+
     const data = await res.json();
     const text = data.content.map(i => i.text||"").join("");
     const clean = text.replace(/```json|```/g,"").trim();
     const parsed = JSON.parse(clean);
+
     if (parsed.title) document.getElementById("titleInput").value = parsed.title;
     if (parsed.desc)  document.getElementById("descInput").value  = parsed.desc;
     if (parsed.category) {
@@ -497,9 +594,27 @@ Si no podés acceder al contenido, inferí por la URL. Respondé SOLO el JSON.`;
       S.currentTags = parsed.tags.map(t => t.toLowerCase().replace(/\s+/g,"-"));
       renderTagsInModal();
     }
-    stripText.textContent = "✓ IA completó los datos. Revisá y guardá.";
+
+    // Store OG image if found
+    if (ogData.image) {
+      S._pendingOgImage = ogData.image;
+      stripText.innerHTML = "✓ IA completó los datos · imagen de vista previa detectada. Revisá y guardá.";
+    } else {
+      S._pendingOgImage = null;
+      stripText.textContent = "✓ IA completó los datos. Revisá y guardá.";
+    }
+
   } catch(e) {
-    stripText.textContent = "No se pudo analizar automáticamente. Completá los datos manualmente.";
+    console.error("AI error:", e);
+    // Fallback: if we got OG data, use it
+    if (ogData.title) {
+      document.getElementById("titleInput").value = ogData.title;
+      if (ogData.desc) document.getElementById("descInput").value = ogData.desc;
+      if (ogData.image) S._pendingOgImage = ogData.image;
+      stripText.textContent = "IA no disponible, se usaron los datos del link. Revisá y guardá.";
+    } else {
+      stripText.textContent = "No se pudo analizar. Completá los datos manualmente.";
+    }
   }
   btn.disabled = false;
 }
@@ -523,6 +638,12 @@ document.getElementById("saveLinkBtn").addEventListener("click", async () => {
     tags     : [...S.currentTags],
     user     : S.currentUser,
   };
+
+  // Attach OG image if fetched during AI analysis
+  if (S._pendingOgImage) {
+    data.ogImage = S._pendingOgImage;
+    S._pendingOgImage = null;
+  }
 
   try {
     if (S.editingId) {
@@ -675,4 +796,64 @@ function escHtml(str="") {
 }
 function escAttr(str="") {
   return str.replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
+// ═══════════════════════════════════════════
+// API KEY MANAGEMENT
+// ═══════════════════════════════════════════
+function getApiKey() {
+  return localStorage.getItem("fl_apikey") || "";
+}
+function setApiKey(key) {
+  localStorage.setItem("fl_apikey", key.trim());
+}
+
+window.saveApiKey = () => {
+  const inp = document.getElementById("apiKeyInput");
+  const key = inp.value.trim();
+  if (!key.startsWith("sk-ant-")) {
+    toast("La clave debe comenzar con sk-ant-", "error");
+    return;
+  }
+  setApiKey(key);
+  inp.value = "sk-ant-...guardada";
+  toast("Clave API guardada ✓");
+  closeModal("apiKeyModal");
+};
+
+window.openApiKeyModal = () => {
+  const inp = document.getElementById("apiKeyInput");
+  const existing = getApiKey();
+  inp.value = existing ? "sk-ant-...guardada" : "";
+  openModal("apiKeyModal");
+};
+
+// ═══════════════════════════════════════════
+// FETCH OPEN GRAPH IMAGE
+// ═══════════════════════════════════════════
+async function fetchOgImage(url) {
+  try {
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const html = data.contents || "";
+    // Try og:image first, then twitter:image
+    const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+      || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)
+      || html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i)
+      || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i);
+    if (ogMatch && ogMatch[1]) {
+      let imgUrl = ogMatch[1];
+      // Handle relative URLs
+      if (imgUrl.startsWith("/")) {
+        const base = new URL(url);
+        imgUrl = base.origin + imgUrl;
+      }
+      return imgUrl;
+    }
+  } catch(e) {
+    // Silently fail
+  }
+  return null;
 }
