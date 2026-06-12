@@ -183,6 +183,16 @@
     </div>
 
     <div class="form-group">
+      <label class="form-label">Imagen <span class="label-hint">(opcional · captura de pantalla, etc.)</span></label>
+      <div id="imagePreviewWrap" class="hidden"></div>
+      <label class="img-upload-btn" for="imageUploadInput">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 4l3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M1 10v1a2 2 0 002 2h8a2 2 0 002-2v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Subir imagen desde el dispositivo
+      </label>
+      <input type="file" id="imageUploadInput" accept="image/*" style="display:none">
+    </div>
+
+    <div class="form-group">
       <label class="form-label">Tags <span class="label-hint">(Enter para agregar)</span></label>
       <div class="tags-input-wrap" id="tagsWrap">
         <input class="tag-text-input" id="tagTextInput" placeholder="Ej: vegano, fácil, sin horno...">
